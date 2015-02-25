@@ -383,6 +383,8 @@ $zoo = new ZOOtoWP('http://visitandalsnes.com', array(
 	'right_column'			=> 'right_en'
 ));
 $zoo->run('activities');
+
+// print the log
 $zoo->print_log();
 
 ?>
