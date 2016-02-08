@@ -264,7 +264,7 @@ class ZOOConvert {
 
 							case 'gallery':
 								$value = $data['value'];
-								$this->import['galleries'][self::slug($value, '_')] = $value;
+								$this->import['galleries'][self::slug($value, '_')] = json_encode($value);
 								break;
 
 							case 'googlemaps':

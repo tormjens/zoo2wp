@@ -14,10 +14,16 @@ class ZOOtoWP {
 
 	private $converter = null;
 
+	private $translations = array();
+
 	public function __construct($url, $rename = array(), $lang = 'nb_NO', $folder = '') {
 
 		$this->converter = new ZOOConvert(trailingslashit($url), $rename, $lang, $folder);
 
+	}
+
+	public function translate( $translations ) {
+		$this->translations = $translations;
 	}
 
 	public function run( $post_type = '' ) {
@@ -96,41 +102,57 @@ class ZOOtoWP {
 
 	public function create_category($post_type, $par, $languages) {
 
-		$this->log[] = 'Creating category';
-
 		global $polylang;
 
 		if( !is_object($polylang) ) {
 			$this->log[] = 'Polylang missing. Please install.';
 		} 
 
-		$taxonomy = 'category_'. $post_type;
+		$taxonomy = 'category_items';
 		$terms = array();
 
 		foreach( $languages as $language => $category ) {
+
+			$this->log[] = 'Creating category: ' . $category['name'];
 
 			$language = str_replace('-', '_', $language);
 
 			$lang = $polylang->model->get_language($language);
 
 			$parent = 0;
+			$par = 0;
+			if( $language === 'nb_NO' ) {
+				$par = $this->translations[$post_type];
+			}
+			else {
+				$par = $post_type;
+			}
+
 			if( $par !== 0 ) {
 				$parent = get_term_by( 'slug', $par, $taxonomy );
-				$parent = $parent->term_id;
+
+				if( $parent ) {
+					$parent = $parent->term_id;
+				}
 			}
+
 			if( ! $term = term_exists( $category['slug'], $taxonomy ) ) {
+
+				$description = substr( $category['description'], 0, 1 ) === '{' ? $category['byline'] : $category['description'];
 				$term = wp_insert_term( 
 					$category['name'], 
 					$taxonomy, 
 					array(
 						'slug' 			=> $category['slug'],
 						'parent'		=> $parent,
-						'description'	=> $category['description']
+						'description'	=> $description
 					)
 				);
+				$this->log[] = '<em>Category created</em>';
 			}
 			else {
-				$this->log[] = '<em>Category exists</em>';
+				wp_update_term( $term['term_id'], 'category_items', array( 'parent' => $parent ) );
+				$this->log[] = '<em>Category exists. Updated parent.</em>';
 			}
 
 			$option = $taxonomy . '_' . $term['term_id'] . '_';
@@ -161,11 +183,11 @@ class ZOOtoWP {
 
 			$this->log[] = '<strong>Importing posts for '. $post_type .'</strong>';
 
-			if( ! post_type_exists( $post_type ) ) {
-				register_post_type( $post_type );
-				$this->log[] = 'Post type does not exists. It has been temporarily created';
-				$this->log[] = "<pre><code>register_post_type( '$post_type' );</code></pre>";
-			}
+			// if( ! post_type_exists( $post_type ) ) {
+			// 	register_post_type( $post_type );
+			// 	$this->log[] = 'Post type does not exists. It has been temporarily created';
+			// 	$this->log[] = "<pre><code>register_post_type( '$post_type' );</code></pre>";
+			// }
 
 			foreach( $items as $item ) {
 				$post = $this->post($item['post'], $item['fields']);
@@ -186,19 +208,30 @@ class ZOOtoWP {
 		$query .= ' AND post_title = %s';
 		$query .= ' AND post_type = %s';
 		$args[] = $post_title;
-		$args[] = $post_type;
+		$args[] = 'items';
 
 		if ( !empty ( $args ) )
 			return (int) $wpdb->get_var( $wpdb->prepare($query, $args) );
 
 	}
 
-	public function post_categories( $categories, $post_type ) {
+	public function post_categories( $categories, $post_type, $lang = 'nb' ) {
+
+		global $polylang;
 
 		$cats = array();
 
+		if( !$categories )
+			return $cats;
+
 		foreach($categories as $category) {
-			$term = get_term_by( 'slug', $category, 'category_'. $post_type );
+			$term = get_term_by( 'slug', $category, 'category_items' );
+
+			if( $term && $lang !== 'nb' ) {
+				$translation = $polylang->model->get_translation('term', $term->term_id, $lang);
+				if($translation)
+					$term = get_term_by( 'id', $translation, 'category_items');
+			}
 			if($term) 
 				$cats[] = $term->term_id;
 		}
@@ -215,13 +248,23 @@ class ZOOtoWP {
 
 		$this->log[] = 'Importing post: '.$item['post_title'].'';
 
-		if( !$post = $this->post_exists( $item['post_title'], $item['post_type'] ) ) {
+		if( !$post = $this->post_exists( $item['post_title'], 'items' ) ) {
 
 			$first = $item;
 			$second = $item;
-			$second['post_name'] = $second['post_name'] . '-en';
-			$second['tax_input']['category_'. $item['post_type']] = $this->post_categories($second['tax_input']['category_'. $item['post_type']], 'category_'. $item['post_type']);
 
+			$first['tax_input'][ 'category_'. $item['post_type'] ][] = $this->translations[$item['post_type']];
+			$first['tax_input']['category_items'] = $this->post_categories($first['tax_input']['category_'. $item['post_type']], 'category_items');
+			unset($first['tax_input']['category_'. $item['post_type']]);
+			$first['post_type'] = 'items';
+
+
+			$second['post_name'] = $second['post_name'] . '-en';
+			$second['tax_input'][ 'category_'. $item['post_type'] ][] = $item['post_type'];
+			$second['tax_input']['category_items'] = $this->post_categories($second['tax_input']['category_'. $item['post_type']], 'category_items', 'en');
+			unset($second['tax_input']['category_'. $item['post_type']]);
+			$second['post_type'] = 'items';
+			
 			$post_no = wp_insert_post( $first, true );
 			$post_en = wp_insert_post( $second, true );
 
@@ -235,7 +278,19 @@ class ZOOtoWP {
 
 		}
 		else {
-			$this->log[] = '<em>Post already exists.</em>';
+
+			$first = $item;
+			$second = $item;
+
+			$post_id = $post;
+			$first['tax_input'][ 'category_'. $item['post_type'] ][] = $this->translations[$item['post_type']];
+			wp_set_object_terms($post_id, $this->post_categories($first['tax_input']['category_'. $item['post_type']], 'category_items'), 'category_items', true);
+
+			$translation = pll_get_post($post_id, 'en');
+			$second['tax_input'][ 'category_'. $item['post_type'] ][] = $item['post_type'];
+			wp_set_object_terms($translation, $this->post_categories($second['tax_input']['category_'. $item['post_type']], 'category_items', 'en'), 'category_items', true);
+
+			$this->log[] = '<em>Post already exists. Updated categories.</em>';
 		}
 
 		return $post;
@@ -332,11 +387,11 @@ class ZOOtoWP {
 		$gallery_dir = dirname(__FILE__) . '/images/images' . $folder;
 		$gallery_url = trailingslashit( home_url() . '/test/images/images' . $folder );
 
-		$files = trailingslashit( $gallery_dir ) . '*';
+		$files = trailingslashit( $gallery_dir ) . '*.{jpg,png,gif}';
 
 		$gallery = array();
 
-		foreach( glob($files) as $file ) {
+		foreach( glob($files, GLOB_BRACE) as $file ) {
 
 
 			$image = basename($file);
@@ -382,7 +437,18 @@ $zoo = new ZOOtoWP('http://visitandalsnes.com', array(
 	'hyrekolonne'			=> 'right',
 	'right_column'			=> 'right_en'
 ));
-$zoo->run('activities');
+
+$zoo->translate(array(
+	'accommodation' 	=> 'overnatting',
+	'activities' 		=> 'aktiviteter',
+	'shopping' 			=> 'handel',
+	'travel' 			=> 'reise',
+	'gems' 				=> 'perler',
+	'eating' 			=> 'spise',
+	'winter' 			=> 'vinter',
+));
+
+$zoo->run('winter');
 
 // print the log
 $zoo->print_log();
